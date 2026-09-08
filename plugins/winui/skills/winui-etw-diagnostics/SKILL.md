@@ -1,6 +1,6 @@
 ---
 name: winui-etw-diagnostics
-description: "Collect and analyze WinUI ETW traces for startup, lifecycle, UI-thread stalls, layout, rendering, images, input, scrolling, virtualization, controls, device loss, and XAML Islands."
+description: "Collect native WinUI ETW without elevation using private logging, with optional WPR for startup and system-wide CPU evidence. Diagnose lifecycle, UI-thread stalls, layout, rendering, images, input, scrolling, virtualization, controls, device loss, and XAML Islands."
 ---
 
 # WinUI ETW diagnostics
@@ -33,17 +33,61 @@ provider is not registered by name.
 compiled into special debug framework builds and is not an expected surface of shipped
 retail WinUI binaries. XAML compiler markers are build-time logging, not runtime WinUI ETW.
 
-## Collect a trace
+## Collect without elevation (default)
+
+Use the bundled `Collect-WinUITrace.ps1` for an already-running WinUI desktop app.
+It collects **native ETW**, not EventPipe, using a PID-filtered private file logger.
+It requires **no elevation, Performance Log Users membership, ACL changes, privileged
+service, or changes to the app**. Windows still enforces access to the target process:
+use an accessible desktop app running as the same user at the same integrity level.
+Do not promise access to elevated, protected, other-user, or AppContainer processes.
+
+Resolve the script relative to this installed skill's directory, not the app repository.
+Keep its `assets\PrivateEtwSession.cs` beside it in the original directory layout.
+Run from normal 64-bit PowerShell 5.1+ on Windows 10 version 1703 or later:
+
+```powershell
+$skillPath = "<winui-etw-diagnostics skill directory>"
+& "$skillPath\Collect-WinUITrace.ps1" -ProcessId <PID> `
+  -OutputDirectory .\winui-private -DurationSeconds 30
+# Reproduce in the app while the command says "Recording".
+```
+
+The script requires a new or empty output directory and writes `winui.etl` (potentially
+with a PID suffix) plus `capture.json` containing the process lifetime, loaded WinUI DLL
+version/path, enabled providers, capture interval, and available loss statistics.
+It stops only its own session, including on normal PowerShell cancellation. Do not
+forcibly kill the collector. Captures are bounded to 30 seconds and 128 MB by default;
+`-DurationSeconds` and `-MaximumFileSizeMB` override these within bounded ranges.
+A full file can truncate the capture: always inspect coverage, not just file existence.
+
+Default providers match `WinUIEvents` below. Add `-ControlsDebug` or `-Diagnostics`
+only for short, focused captures; either switch can be used independently.
+No tools or packages are downloaded. If PowerShell policy blocks the script or `Add-Type`,
+report the limitation; do not relax policy or fall back to elevation/permission grants.
+
+Private logging provides an event timeline, **not live ETW streaming or kernel CPU/wait
+analysis**. It misses events before attachment, including initial app startup, and does
+not capture compositor/GPU work in other processes. Do not infer CPU usage or ready-thread
+delay from event durations. If elevation is unavailable, report those evidence gaps and,
+for managed apps, use the EventPipe companion below.
+
+See [private capture and decoding](references/private-capture.md) for no-admin ETL
+decoding, troubleshooting, and the underlying ETW API contract.
+
+## Optional elevated WPR collection
+
+Use WPR only when elevation is explicitly available and system-wide CPU/wait evidence
+or pre-launch startup collection is needed. **Do not choose this workflow when elevation
+or tracing-permission changes are disallowed.**
 
 Prefer a short trace containing one clean reproduction. Resolve `assets\winui-etw.wprp`
-relative to this installed skill's directory, not the app repository. The agent should use
-the asset path exposed when this skill is loaded. If the host does not expose installed
+relative to this installed skill's directory. If the host does not expose installed
 skill paths, copy the bundled WPRP asset to a writable local directory and use that path.
-Run from an elevated PowerShell window:
+Run from an elevated PowerShell window. Do not cancel someone else's WPR recording:
 
 ```powershell
 $wprpPath = Join-Path "<winui-etw-diagnostics skill directory>" "assets\winui-etw.wprp"
-wpr -cancel
 wpr -start "${wprpPath}!WinUIEvents" -filemode
 # Launch or activate the app, then reproduce the problem once.
 wpr -stop .\winui-events.etl "WinUI lifecycle/performance reproduction"
@@ -65,7 +109,6 @@ and image-load data:
 
 ```powershell
 $wprpPath = Join-Path "<winui-etw-diagnostics skill directory>" "assets\winui-etw.wprp"
-wpr -cancel
 wpr -start "${wprpPath}!WinUICPU" -filemode
 # Reproduce once.
 wpr -stop .\winui-cpu.etl "WinUI CPU reproduction"
@@ -77,7 +120,6 @@ high-volume diagnostics and controls-debug providers, so keep the capture especi
 
 ```powershell
 $wprpPath = Join-Path "<winui-etw-diagnostics skill directory>" "assets\winui-etw.wprp"
-wpr -cancel
 wpr -start "${wprpPath}!WinUIDiagnostics" -filemode
 # Reproduce the narrow diagnostic scenario once.
 wpr -stop .\winui-diagnostics.etl "WinUI diagnostics reproduction"
@@ -91,7 +133,8 @@ $wprpPath = Join-Path "<winui-etw-diagnostics skill directory>" "assets\winui-et
 wpr -profiles $wprpPath
 ```
 
-For a minimal event-only fallback:
+For a minimal event-only fallback in the same elevated workflow (this is **not** the
+no-admin private logger):
 
 ```powershell
 logman start WinUITrace -ets -o "$PWD\winui.etl" `
@@ -129,8 +172,9 @@ Do not enable this provider routinely. WPP messages are implementation diagnosti
 remain undecoded without matching WinUI symbols/TMF information.
 
 Capture startup by starting WPR before launching the process. For an already-running app,
-record its PID and the exact reproduction interval. ETW sessions are machine-wide; always
-filter the analysis to the target process and its lifetime.
+record its PID and the exact reproduction interval. These WPR/logman sessions are
+machine-wide, unlike the PID-filtered private collector; always filter the analysis to
+the target process and its lifetime.
 
 ## Managed .NET companion diagnostics
 
@@ -160,8 +204,8 @@ First confirm the target is a diagnosable .NET process:
 dotnet-trace ps
 ```
 
-For managed CPU/runtime evidence, run `dotnet-trace` alongside the WPR capture over the same
-short reproduction interval:
+For managed CPU/runtime evidence, run `dotnet-trace` alongside the private ETW or WPR
+capture over the same short reproduction interval:
 
 ```powershell
 dotnet-trace collect --process-id <PID> `
@@ -172,8 +216,9 @@ dotnet-trace collect --process-id <PID> `
 
 Open `.nettrace` in PerfView or Visual Studio. Use it to attribute managed callbacks,
 allocations, GC pauses, JIT, exceptions, contention, and managed CPU. Use the ETL for WinUI
-layout/render/input events, native CPU and waits, kernel scheduling, and compositor/device
-work. Record one wall-clock reproduction interval and an app-visible marker so the two
+layout/render/input events, and, only with the appropriate system-wide capture, native CPU
+and waits, kernel scheduling, and compositor/device work.
+Record one wall-clock reproduction interval and an app-visible marker so the two
 files can be correlated; do not assume their relative timestamps share one viewer timeline.
 
 Use counters before a heavier managed trace when the question is simply whether managed
@@ -206,9 +251,12 @@ Official background:
 
 ## Decode correctly
 
-Open the ETL in Windows Performance Analyzer (WPA). Start with:
+Open the ETL in Windows Performance Analyzer (WPA), or use the no-install `tracerpt`
+workflow in [private capture and decoding](references/private-capture.md).
+Reading a trace does not itself require elevation when the file is accessible. Start with:
 
-- **System Activity > Processes** to identify the exact process lifetime.
+- **System Activity > Processes**, when present, to identify the exact process lifetime.
+  For private traces, use the recorded PID and process start time in `capture.json`.
 - **System Activity > Generic Events** for WinUI events.
 - **Computation > CPU Usage (Sampled)** and **CPU Usage (Precise)** for a `WinUICPU`
   capture.
@@ -233,9 +281,15 @@ $xamlModule | Select-Object FileName,
   @{ Name = "FileVersion"; Expression = { $_.FileVersionInfo.FileVersion } }
 ```
 
-Use `ProductVersion` to select the `winui3/release/<version>` tag. When `FileVersion`
-includes a source commit hash, prefer that exact commit. Install the resulting manifest
-from an elevated shell on the analysis machine, and reopen the trace:
+`ProductVersion` may identify only a release family rather than its servicing version.
+Use the runtime's release information to find the matching `winui3/release/<version>`
+tag; when `FileVersion` includes an available source commit hash, prefer that exact commit.
+Do not guess a servicing tag from the family alone.
+
+For no-admin analysis, pass that manifest to `tracerpt -import` as described in the private
+capture reference. This does not register it on the machine. Only when machine-wide
+registration is explicitly permitted, install it from an elevated analysis shell and
+reopen the trace:
 
 ```powershell
 wevtutil im .\Microsoft-Windows-XAML-ETW.man
@@ -267,7 +321,8 @@ wevtutil um .\Microsoft-Windows-XAML-ETW.man
    when present; otherwise use task/event name, thread, object pointer, image ID, or another
    payload correlation key. Do not pair overlapping operations by name alone.
 5. Quantify duration, count, frequency, and concurrency before assigning a cause. For long
-   operations, inspect CPU stacks and ready-thread delay over the same interval.
+   operations, inspect CPU stacks and ready-thread delay when collected. A private
+   event-only trace cannot establish either.
 6. Treat missing boundary events as evidence. For example, a queued image decode with no
    off-thread start differs from a completed decode with no hardware-resource update.
 7. Cite provider, event name, timestamp/duration, thread, and payload values in every
