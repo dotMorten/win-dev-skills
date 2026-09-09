@@ -21,7 +21,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$collector = Join-Path $PSScriptRoot '..\..\plugins\winui\skills\winui-etw-diagnostics\Collect-WinUITrace.ps1'
+$collector = Join-Path $PSScriptRoot '..\..\plugins\winui\agent-plugin\skills\winui-etw-diagnostics\Collect-WinUITrace.ps1'
 $output = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory)
 if (Test-Path -LiteralPath $output) { throw 'Use a new OutputDirectory.' }
 $null = New-Item -ItemType Directory -Path $output
