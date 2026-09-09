@@ -23,7 +23,8 @@ The `version-bump` and `changelog-entry` CI jobs enforce this.
 
 ### Added
 
-- `winui-etw-diagnostics`: collects shipped WinUI runtime providers with WPR and guides
+- `winui-etw-diagnostics`: collects shipped WinUI runtime providers without elevation
+  using a bounded private logger, with optional elevated WPR collection, and guides
   ETW analysis for startup, lifecycle, UI-thread stalls, layout, rendering, images, input,
   scrolling, virtualization, controls, device loss, and XAML Islands. It also explains
   when EventPipe-based `dotnet-trace`, `dotnet-monitor`, and `dotnet-counters` can add
@@ -114,5 +115,4 @@ release process was introduced. Future releases will list per-PR changes here.
   against source drift.
 - Marketplace manifest under `.github/plugin/marketplace.json` and Claude Code
   marketplace manifest under `.claude-plugin/marketplace.json`.
-
 

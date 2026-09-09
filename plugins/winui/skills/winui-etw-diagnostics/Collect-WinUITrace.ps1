@@ -124,6 +124,7 @@ try {
                 CollectionLoopCompleted = $completed
                 SessionName = $session.Name
                 StopSucceeded = $session.StopSucceeded
+                SessionAlreadyStopped = $session.SessionAlreadyStopped
                 MaximumFileSizeMB = $MaximumFileSizeMB
                 FileCapReached = $capReached
                 XamlModules = $moduleInfo
@@ -146,6 +147,9 @@ try {
     }
     if ($capReached) {
         Write-Warning 'The ETL reached its file-size cap. The capture may have ended before the reproduction did.'
+    }
+    if ($session.SessionAlreadyStopped) {
+        Write-Warning 'ETW had already stopped the session. Final loss statistics are unavailable; inspect trace coverage.'
     }
     if ($target.HasExited) {
         Write-Warning 'The target exited during capture; final per-process loss statistics may be unavailable.'

@@ -67,9 +67,10 @@ namespace WinUI.Diagnostics
         private ulong handle;
         private bool disposed;
 
-        public uint EventsLost { get; private set; }
-        public uint LogBuffersLost { get; private set; }
+        public uint? EventsLost { get; private set; }
+        public uint? LogBuffersLost { get; private set; }
         public bool StopSucceeded { get; private set; }
+        public bool SessionAlreadyStopped { get; private set; }
         public string Name { get { return name; } }
 
         public PrivateEtwSession(int targetProcessId, string outputPath, uint maximumFileSizeMB)
@@ -144,6 +145,14 @@ namespace WinUI.Diagnostics
                 return;
             // Retain the versioned properties and PID filter for ControlTrace too.
             uint status = ControlTraceW(handle, name, properties, 1);
+            // Sequential logs stop automatically at their size limit. No final
+            // counters are available if ETW has already removed the session.
+            if (status == 4201) // ERROR_WMI_INSTANCE_NOT_FOUND
+            {
+                handle = 0;
+                SessionAlreadyStopped = true;
+                return;
+            }
             ThrowIfFailed(status, "ControlTrace(STOP)");
             handle = 0;
             StopSucceeded = true;

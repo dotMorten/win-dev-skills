@@ -65,7 +65,9 @@ TraceLogging records carry their own schema, so names such as
 `Scheduling_RenderThreadWaitForWork` and their payload fields can be decoded without
 machine-wide manifest installation. Some manifest events may be missing fields or be
 decoded using an incompatible installed schema. A schema warning is not a clean decode;
-do not draw conclusions from those records.
+inspect `ProcessingErrorData` by provider and event ID. A trace-header error does not
+invalidate otherwise decoded WinUI records, but never draw conclusions from an errored
+record.
 
 If a **matching** `Microsoft-Windows-XAML-ETW.man` is available, import it for that decoding
 operation only:
@@ -80,10 +82,14 @@ Use the binary version recorded in `capture.json` and the manifest acquisition g
 in `SKILL.md`. Do not run `wevtutil im` for this workflow. `-lr` is a best-effort decoder
 option, not a fix for an incompatible manifest.
 
-Confirm native target-provider records rather than treating a nonempty ETL as success:
+Confirm native target-provider records rather than treating a nonempty ETL as success.
+Set `$decodedPath` to the output from the decode operation you intend to analyze (including
+the matched-manifest output when used). The following small-trace example processes XML
+locally and prints only provider counts, not the event objects:
 
 ```powershell
-[xml]$decoded = Get-Content .\winui-events.xml -Raw
+$decodedPath = '.\winui-events.xml' # Use .\winui-events-matched.xml after manifest import.
+[xml]$decoded = Get-Content -LiteralPath $decodedPath -Raw
 $targetEvents = @($decoded.Events.Event | Where-Object {
     $_.System.Execution.ProcessID -eq [string]$capture.ProcessId -and
     $_.System.Provider.Guid -in @(
@@ -95,13 +101,19 @@ $targetEvents = @($decoded.Events.Event | Where-Object {
     )
 })
 if ($targetEvents.Count -eq 0) { throw 'No native WinUI events from the target PID were decoded.' }
+$decodeErrors = @($targetEvents | Where-Object { $_.SelectSingleNode("*[local-name()='ProcessingErrorData']") })
+if ($decodeErrors.Count -gt 0) {
+    throw "$($decodeErrors.Count) target WinUI records failed decoding. Obtain the matching manifest before analyzing those records."
+}
 $targetEvents | Group-Object { $_.System.Provider.Guid } | Select-Object Count, Name
 ```
 
 Use `RenderingInfo.Task` for decoded names where present, and retain provider GUID,
 event ID/version, opcode, timestamp, thread, activity ID, and payload fields. Event ID
-zero alone does not identify a TraceLogging event. For large traces use WPA instead of
-loading the entire XML document into memory.
+zero alone does not identify a TraceLogging event. For large traces use WPA or a local
+streaming XML reader instead of loading the entire XML document into memory. Follow
+the bounded-output guidance in `SKILL.md`: retain the full files, return small summaries,
+and retrieve only the evidence needed for the next question.
 
 ## Limitations and failures
 
@@ -113,6 +125,7 @@ loading the entire XML document into memory.
 | PowerShell blocks the script or `Add-Type` | Respect application-control and execution policy. This source-based helper cannot run in that environment without an approved deployment path. |
 | No native events, or an enabled provider is absent | Reproduce after attachment and confirm the selected component actually emits events in this runtime. An idle window or a gated event may produce nothing. |
 | ETW loss counters are nonzero or the file reaches its cap | Coverage is incomplete. Shorten the scenario, remove verbose providers, or increase the bounded `-MaximumFileSizeMB`. Do not interpret missing stop events as a hang. |
+| `SessionAlreadyStopped` is true | ETW removed the session before cleanup, for example when a sequential file filled. `StopSucceeded` is false and loss counters are null (unknown), not zero. Inspect `FileCapReached` and the event interval; metadata end time is when the collector finalized, not necessarily when recording stopped. |
 | App exits/crashes, or collection is forcibly killed | Tail data and final statistics may be missing. A zero loss counter after target exit is not proof of completeness. |
 | Need initial startup | This helper attaches only after WinUI is loaded. It cannot recover prior initialization events. A pre-launch/private instrumentation design is separate work. |
 | Need live streaming, native sampled CPU, context-switch/ready-thread stacks, GPU/compositor processes | Not provided. Private loggers do not support real-time ETW delivery or kernel events. Use managed EventPipe evidence where applicable and explicitly report the remaining gap if elevated WPR is unavailable. |

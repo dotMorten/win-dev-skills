@@ -133,46 +133,8 @@ $wprpPath = Join-Path "<winui-etw-diagnostics skill directory>" "assets\winui-et
 wpr -profiles $wprpPath
 ```
 
-For a minimal event-only fallback in the same elevated workflow (this is **not** the
-no-admin private logger):
-
-```powershell
-logman start WinUITrace -ets -o "$PWD\winui.etl" `
-  -p "{531A35AB-63CE-4BCF-AA98-F88C7A89E455}" 0xffffffffffffffff 5 `
-  -p "{2DC72F6E-E4D1-5F58-3245-09A4243799DD}" 0xffffffffffffffff 5 `
-  -p "{F55F7011-988D-4674-A724-E01B39DC7AF6}" 0xffff 5
-# Reproduce once.
-logman stop WinUITrace -ets
-```
-
-For a focused controls investigation, add the controls-debug provider while the session is
-running. For visual-tree, binding, accessibility, or detailed-input diagnostics, add the
-diagnostics provider instead or add both only for a very short capture:
-
-```powershell
-logman update trace WinUITrace -ets `
-  -p "{AFE0AE07-66A7-55BB-12FF-01116BC08C1A}" 0xffff 5
-
-logman update trace WinUITrace -ets `
-  -p "{59E7A714-73A4-4147-B47E-0957048C75C4}" 0xffffffffffffffff 5
-```
-
-For a focused DirectManipulation/resource-loading investigation, optionally add the WPP
-provider. Its flags are `0x001` Common, `0x002` DM compositor, `0x004` DM input manager,
-`0x008` DM input-manager viewport, `0x010` DM PAL service, `0x020` DM PAL viewport handler,
-`0x040` DM ScrollViewer, `0x080` DM ScrollContentPresenter, `0x100` resource loading, and
-`0x200` ListViewBaseItemChrome:
-
-```powershell
-logman update trace WinUITrace -ets `
-  -p "{CB18E7B3-F5B0-412F-9F18-5D87FEFCD663}" 0x3ff 5
-```
-
-Do not enable this provider routinely. WPP messages are implementation diagnostics and may
-remain undecoded without matching WinUI symbols/TMF information.
-
 Capture startup by starting WPR before launching the process. For an already-running app,
-record its PID and the exact reproduction interval. These WPR/logman sessions are
+record its PID and the exact reproduction interval. These WPR sessions are
 machine-wide, unlike the PID-filtered private collector; always filter the analysis to
 the target process and its lifetime.
 
@@ -268,7 +230,8 @@ manifest may show provider GUID `{531A...}` and numeric event IDs instead of nam
 fields. Do not interpret those numeric IDs against a different WinUI version. Obtain the
 `Microsoft-Windows-XAML-ETW.man` from the matching
 [`microsoft-ui-xaml` release tag](https://github.com/microsoft/microsoft-ui-xaml/tags) at
-`dxaml\xcp\plat\win\desktop\Microsoft-Windows-XAML-ETW.man`.
+`src\dxaml\xcp\plat\win\desktop\Microsoft-Windows-XAML-ETW.man`
+(older tags use the same path without `src\`).
 
 Identify the WinUI binary actually loaded by the target process rather than choosing among
 all runtimes installed on the machine:
@@ -285,31 +248,36 @@ $xamlModule | Select-Object FileName,
 Use the runtime's release information to find the matching `winui3/release/<version>`
 tag; when `FileVersion` includes an available source commit hash, prefer that exact commit.
 Do not guess a servicing tag from the family alone.
+For a framework-package runtime, the package containing the loaded DLL identifies the
+installed runtime version; do not substitute another installed package or assume the DLL's
+product-version family matches the package version.
 
-For no-admin analysis, pass that manifest to `tracerpt -import` as described in the private
-capture reference. This does not register it on the machine. Only when machine-wide
-registration is explicitly permitted, install it from an elevated analysis shell and
-reopen the trace:
-
-```powershell
-wevtutil im .\Microsoft-Windows-XAML-ETW.man
-```
-
-If `wevtutil` cannot resolve the manifest's bare `Microsoft.UI.Xaml.dll` message/resource
-file name, use the loaded module path:
-
-```powershell
-wevtutil im .\Microsoft-Windows-XAML-ETW.man `
-  /rf:"$($xamlModule.FileName)" /mf:"$($xamlModule.FileName)"
-```
-
-Remove a temporarily installed manifest after analysis if machine policy requires it:
-
-```powershell
-wevtutil um .\Microsoft-Windows-XAML-ETW.man
-```
+Pass that manifest to `tracerpt -import` as described in the private capture reference.
+This also works for WPR ETLs and does not register the manifest on the machine.
+Do not install or uninstall the XAML publisher with `wevtutil`: its GUID can already
+belong to a Windows publisher. If WPA cannot decode it correctly, use the imported XML
+for those events rather than changing machine-wide registration.
 
 ## Analysis method
+
+### Keep agent output bounded
+
+Keep ETLs and decoded XML on disk; do not print the full trace into agent context.
+Run filtering and aggregation locally. Start with capture coverage, loss/decode warnings,
+provider counts, and at most 15 event groups, then retrieve at most 20 evidence records
+per query for the relevant process, time interval, thread, or event family. Report the
+query, total matches, and omitted count so a limited result is never mistaken for absence.
+Report errors and unmatched boundaries separately from frequency-ranked groups; rare
+events can matter more than common ones. Preserve correlation keys and retrieve both
+boundaries (expanding the interval if necessary) before calculating durations.
+
+Include source-file and record/timestamp references for drill-down, and redact sensitive
+payloads before returning them. Counts are a navigation aid, not bottleneck attribution.
+Do not disable verbose capture or sample away events solely to save tokens: reduce what
+the agent reads, not the evidence retained. Load the event catalog and exhaustive manifest
+reference only when the current scenario needs them.
+
+### Interpret the evidence
 
 1. Record the app PID, package/runtime version, architecture, trace interval, scenario, and
    providers captured.
